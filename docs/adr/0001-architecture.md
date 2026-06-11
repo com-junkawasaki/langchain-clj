@@ -45,11 +45,17 @@ thread entity + message entity の datom で、横断ビューは名前付き Da
 ### 4. 積層
 
 ```
-langgraph-clj  (graph / checkpoint / prebuilt / viz)
-      │  :deps io.github.com-junkawasaki/langchain-clj {:git/tag …}
-      ▼
-langchain-clj  (runnable / message / prompt / model / tool / parser / memory / db)
+browser-use-clj      computer-use-clj          ← エージェント層
+        └────────┬────────┘
+          langgraph-clj          comfyui-clj   ← オーケストレーション層
+   (graph/checkpoint/prebuilt)  (node-graph engine)
+                └───────┬───────────┘
+                  langchain-clj                ← このリポジトリ (基盤層)
+  (runnable / message / prompt / model / tool / parser / memory / db)
 ```
+
+下流は全て `io.github.com-junkawasaki/langchain-clj {:git/tag …}` の
+git 依存(直接または langgraph-clj 経由の transitive)。
 
 langgraph-clj v0.1 に同居していた langchain 層をこのリポジトリへ切り出した
 (`langgraph.{runnable,message,prompt,model,tool,parser,memory,db}` →
