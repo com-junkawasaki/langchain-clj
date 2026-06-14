@@ -15,7 +15,8 @@ src/langchain/
   runnable.cljc    LCEL Runnables: pipe / parallel / branch / retry / fallbacks
   message.cljc     chat message data model (Anthropic-shaped maps)
   prompt.cljc      {var} templates, chat templates, placeholders
-  model.cljc       ChatModel protocol, mock model, Anthropic adapter (I/O injected)
+  model.cljc       ChatModel protocol, mock model, Anthropic + OpenAI-compatible
+                   adapters (OpenAI / Ollama / Gemini; I/O injected)
   tool.cljc        tool definitions + execution + wire-format conversion
   parser.cljc      str / edn / json output parsers
   memory.cljc      chat history as datoms
@@ -49,6 +50,14 @@ src/langchain/
     :model "claude-opus-4-8"
     :http-fn host-fetch            ; injected host capability
     :json-write … :json-read …}))  ; defaults to js/JSON on cljs
+
+;; or any OpenAI-compatible backend — OpenAI, local Ollama, Gemini:
+(def gemma
+  (model/openai-model
+   {:url "http://localhost:11434/v1/chat/completions"   ; Ollama, no api-key
+    :model "hf.co/unsloth/gemma-4-E4B-it-qat-GGUF:UD-Q4_K_XL"
+    :http-fn host-fetch
+    :json-write … :json-read …}))
 
 (def chain
   (r/pipe (prompt/chat-template

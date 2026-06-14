@@ -23,7 +23,11 @@
   [tools {:keys [id name input]}]
   (if-let [t (some #(when (= name (:name %)) %) tools)]
     (try
-      {:role :tool :tool-call-id id :content (str ((:fn t) input))}
+      (let [r ((:fn t) input)]
+        ;; content blocks (e.g. a host screenshot as Anthropic image
+        ;; blocks) pass through untouched; everything else stringifies
+        {:role :tool :tool-call-id id
+         :content (cond (string? r) r (vector? r) r :else (str r))})
       (catch #?(:clj Exception :cljs :default) e
         {:role :tool :tool-call-id id :error? true
          :content (str "Error: " (ex-message e))}))
@@ -42,3 +46,12 @@
   {:name (:name t)
    :description (:description t)
    :input_schema (:schema t)})
+
+(defn ->openai
+  "Converts a tool to the OpenAI Chat Completions wire format
+  (also spoken by Ollama and Gemini's OpenAI-compatible endpoint)."
+  [t]
+  {:type "function"
+   :function {:name (:name t)
+              :description (:description t)
+              :parameters (:schema t)}})
