@@ -5,7 +5,7 @@ zero dependencies, every namespace is `.cljc`, designed to run on
 **Clojure-on-WASM hosts** (SCI, ClojureScript, GraalVM, kotoba-clj) as
 well as the JVM, with all state persisted through a **Datomic API**.
 
-[langgraph-clj](https://github.com/com-junkawasaki/langgraph-clj)
+[langgraph-clj](https://github.com/kotoba-lang/langgraph)
 builds graph orchestration (StateGraph, checkpointers, ReAct agent) on
 top of this library — the same layering as upstream langchain-core /
 langgraph.
