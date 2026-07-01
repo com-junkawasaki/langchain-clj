@@ -3,7 +3,8 @@
   (:require #?(:clj [clojure.edn :as edn]
                :cljs [cljs.reader :as edn])
             [clojure.string :as str]
-            [langchain.message :as msg]))
+            [langchain.message :as msg]
+            [langchain.json :as json]))
 
 (defn str-parser
   "Assistant message → plain text."
@@ -20,11 +21,15 @@
       (edn/read-string s))))
 
 (defn json-parser
-  "Assistant message → data, using a host-injected json-read fn
-  (no JSON parser is bundled — WASM premise)."
-  [json-read]
-  (fn [m]
-    (let [s (-> (msg/text m)
-                (str/replace #"(?s)```(?:json)?\s*(.*?)```" "$1")
-                str/trim)]
-      (json-read s))))
+  "Assistant message → data.
+  - 0-arity: uses the in-language `kotoba-lang/json` parser (langchain.json).
+  - 1-arity: uses a host-injected `json-read` fn (override for a faster/native
+    parser; the original WASM-safe seam)."
+  ([]
+   (json-parser json/decode))
+  ([json-read]
+   (fn [m]
+     (let [s (-> (msg/text m)
+                 (str/replace #"(?s)```(?:json)?\s*(.*?)```" "$1")
+                 str/trim)]
+       (json-read s)))))
