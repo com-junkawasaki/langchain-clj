@@ -38,15 +38,47 @@
   "Creates a kotoba connection map (not an atom — state lives on the server).
 
    url   – kotoba-server base URL, e.g. \"http://149.28.207.62:8080\"
-   graph – IPNS name or CID multibase of the target named graph
-   opts  – :token  Bearer JWT
-           :cacao  base64-CBOR CACAO string (for CACAO-gated endpoints)
-           :did    DID string (required with :cacao; sent as x-kotoba-did)"
+   graph – IPNS name or CID multibase of the target named graph. Still sent
+           as the wire `graph` param — required for reading a pre-established,
+           non-tenant-scoped graph (e.g. `KG-GRAPH-CID`), and kept for
+           backward compat with every existing caller of this fn.
+   opts  – :token   Bearer JWT
+           :cacao   base64-CBOR CACAO string (for CACAO-gated endpoints)
+           :did     DID string (required with :cacao; sent as x-kotoba-did)
+           :db-name tenant database name. When present, `kotoba-api`'s
+                    `:transact!` sends `db_name` (not `graph`) on the wire —
+                    the edge derives + verifies the target graph
+                    server-side as `kotobase/db/<your-did>/<db-name>` from
+                    the CACAO alone, which the live edge now REQUIRES for a
+                    tenant Datom write (`db_name required for a tenant
+                    Datom write` — a plain `:graph` param is rejected on
+                    `datomic.transact`).
+           :graph   precomputed graph CID (e.g. `kotoba.cid/canonical-graph`
+                    or `tsumugu.cacao/canonical-graph` for `<did>/<db-name>`).
+                    `kotoba-api`'s `:q`/`:pull`/`:entid` need THIS (not
+                    `db_name`) — empirically, the live edge's read ops don't
+                    derive the tenant graph from `db_name`+CACAO the way
+                    `transact` does; a `db_name`-only read silently matches
+                    nothing (200 OK, empty rows) rather than erroring. Pass
+                    both `:db-name` (for writes) and `:graph` (for reads) for
+                    a fully-functional tenant `conn` — see `kotoba-conn*`."
   ([url graph] (kotoba-conn url graph {}))
-  ([url graph {:keys [token cacao did]}]
+  ([url graph {:keys [token cacao did db-name]}]
    (cond-> {:kotoba/url url :kotoba/graph graph}
-     token (assoc :kotoba/token token)
-     cacao (assoc :kotoba/cacao cacao :kotoba/did did))))
+     token   (assoc :kotoba/token token)
+     cacao   (assoc :kotoba/cacao cacao :kotoba/did did)
+     db-name (assoc :kotoba/db-name db-name))))
+
+(defn kotoba-conn*
+  "Like `kotoba-conn`, but for a tenant database addressed by `db-name`
+  instead of a precomputed `graph` — the wire shape the live edge's tenant
+  Datom *write* op requires today. Pass `:graph` in `opts` too (the
+  precomputed CID for `<did>/<db-name>`) so `:q`/`:pull`/`:entid` — which
+  need the precomputed graph, not `db_name` — also work; see `kotoba-conn`'s
+  docstring. Equivalent to
+  `(kotoba-conn url (:graph opts) (assoc opts :db-name db-name))`."
+  [url db-name opts]
+  (kotoba-conn url (:graph opts) (assoc opts :db-name db-name)))
 
 ;; ─── private helpers ──────────────────────────────────────────────────────────
 
@@ -98,6 +130,29 @@
 
 ;; ─── api map ─────────────────────────────────────────────────────────────────
 
+(defn- write-scope
+  "Scope param for `:transact!`: a tenant `db-name` (the edge derives +
+  verifies the graph itself from the CACAO's DID — required for tenant
+  writes) if present, else a precomputed `graph` (backward-compat / a
+  pre-established non-tenant graph like `KG-GRAPH-CID`)."
+  [conn]
+  (if-let [db-name (:kotoba/db-name conn)]
+    {:db_name db-name}
+    {:graph (:kotoba/graph conn)}))
+
+(defn- read-scope
+  "Scope param for `:q`/`:pull`/`:entid`: the precomputed `graph` if present
+  — empirically required for tenant reads, since the live edge's read ops
+  don't derive the tenant graph from `db_name`+CACAO the way `transact`
+  does (a `db_name`-only read silently matches nothing). Falls back to
+  `db_name` for a conn built without `:graph` (e.g. an older caller of
+  `kotoba-conn*`; matches that fn's prior behavior — still broken against
+  the live edge's reads, but not a new regression)."
+  [conn]
+  (if-let [graph (:kotoba/graph conn)]
+    {:graph graph}
+    {:db_name (:kotoba/db-name conn)}))
+
 (defn kotoba-api
   "Returns a langchain.db-compatible api map backed by kotoba-server XRPC.
 
@@ -109,13 +164,14 @@
      {:transact! :db :q :pull :entid}
 
    A Datomic Local or DataScript connection can also be used there;
-   kotoba-api is the distributed, CID-pinned, CACAO-gated variant."
+   kotoba-api is the distributed, CID-pinned, CACAO-gated variant. Writes
+   address the graph per `write-scope`, reads per `read-scope` — the live
+   edge requires opposite scope params for each (see both fns' docstrings)."
   [host-caps]
   {:transact!
    (fn [conn tx-data]
      (post! host-caps conn "ai.gftd.apps.kotobase.datomic.transact"
-            (cond-> {:graph  (:kotoba/graph conn)
-                     :tx_edn (pr-str (vec tx-data))}
+            (cond-> (assoc (write-scope conn) :tx_edn (pr-str (vec tx-data)))
               (:kotoba/cacao conn) (assoc :cacao_b64 (:kotoba/cacao conn))))
      ;; tx-report stub — checkpointer only needs side-effect, not tempids
      {:tx-data tx-data})
@@ -128,26 +184,28 @@
    :q
    (fn [query conn & inputs]
      (let [data (post! host-caps conn "ai.gftd.apps.kotobase.datomic.q"
-                       {:graph      (:kotoba/graph conn)
-                        :query_edn  (pr-str query)
-                        ;; inputs_edn: non-$ bindings ($ is already the graph)
-                        :inputs_edn (mapv pr-str inputs)})]
+                       (cond-> (assoc (read-scope conn)
+                                      :query_edn  (pr-str query)
+                                      ;; inputs_edn: non-$ bindings ($ is already the graph)
+                                      :inputs_edn (mapv pr-str inputs))
+                         (:kotoba/cacao conn) (assoc :cacao_b64 (:kotoba/cacao conn))))]
        (project-rows (:rows_edn data) (parse-find-spec query))))
 
    :pull
    (fn [conn pattern eid]
      (let [data (post! host-caps conn "ai.gftd.apps.kotobase.datomic.pull"
-                       {:graph       (:kotoba/graph conn)
-                        :entity      (pr-str eid)
-                        :pattern_edn (pr-str pattern)})]
+                       (cond-> (assoc (read-scope conn)
+                                      :entity      (pr-str eid)
+                                      :pattern_edn (pr-str pattern))
+                         (:kotoba/cacao conn) (assoc :cacao_b64 (:kotoba/cacao conn))))]
        ;; entity_edn is an EDN string of the Datomic entity map
        (edn/read-string (:entity_edn data))))
 
    :entid
    (fn [conn eid]
      (:entity (post! host-caps conn "ai.gftd.apps.kotobase.datomic.entid"
-                     {:graph     (:kotoba/graph conn)
-                      :ident_edn (pr-str eid)})))})
+                     (cond-> (assoc (read-scope conn) :ident_edn (pr-str eid))
+                       (:kotoba/cacao conn) (assoc :cacao_b64 (:kotoba/cacao conn))))))})
 
 ;; ─── kg.ingest surface ────────────────────────────────────────────────────────
 

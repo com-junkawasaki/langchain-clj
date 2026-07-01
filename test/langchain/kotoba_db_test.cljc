@@ -218,6 +218,43 @@
       (let [body (edn/read-string (:body (first @captured)))]
         (is (= "base64cacaoABC" (:cacao_b64 body)))))))
 
+;; ─── tenant db-name addressing (kotoba-conn*) ────────────────────────────────
+
+(deftest db-name-conn-sends-db-name-not-graph
+  (let [captured (atom [])
+        caps     (mock-caps captured
+                            (fn [_nsid _body]
+                              {:status "ok" :graph "irrelevant"
+                               :tx_cid "cid1" :commit_cid "cid2"
+                               :ipns_name "k" :ipns_sequence 1
+                               :ipns_valid_until "2099-01-01"
+                               :index_roots {} :datom_count 0
+                               :journal_cids [] :tempids {} :datoms []}))
+        conn     (kdb/kotoba-conn* "http://kotoba.test:8080" "manga"
+                                   {:cacao "b64cacao" :did "did:key:zTsumugu"})
+        api      (kdb/kotoba-api caps)]
+    ((:transact! api) conn [])
+    (testing "sends db_name, not graph"
+      (let [body (:body (first @captured))]
+        (is (= "manga" (:db_name body)))
+        (is (not (contains? body :graph)))))))
+
+(deftest existing-graph-callers-unaffected
+  (testing "a plain kotoba-conn (no :db-name) keeps sending :graph, never :db_name"
+    (let [captured (atom [])
+          caps     (mock-caps captured
+                              (fn [_nsid _body]
+                                {:graph "k51testgraph" :basis_t nil :rows_edn []}))
+          api      (kdb/kotoba-api caps)]
+      ((:q api) '[:find ?e :where [?e]] test-conn)
+      (let [body (:body (first @captured))]
+        (is (= "k51testgraph" (:graph body)))
+        (is (not (contains? body :db_name)))))))
+
+(deftest kotoba-conn*-equivalent-to-kotoba-conn-with-db-name-opt
+  (is (= (kdb/kotoba-conn* "http://x" "manga" {:did "d"})
+         (kdb/kotoba-conn "http://x" nil {:did "d" :db-name "manga"}))))
+
 ;; ─── kg-ingest! ──────────────────────────────────────────────────────────────
 
 (deftest kg-ingest!-sends-correct-request
